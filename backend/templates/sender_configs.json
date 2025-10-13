@@ -1,0 +1,14 @@
+[
+  {
+    "id": "1760062487.598862",
+    "name": "11",
+    "smtp_host": "smtp.qq.com",
+    "smtp_port": 465,
+    "sender_email": "3364139062@qq.com",
+    "sender_name": "asda",
+    "use_ssl": true,
+    "use_tls": false,
+    "html_mode": false,
+    "created_at": "2025-10-10 10:14:47"
+  }
+]
