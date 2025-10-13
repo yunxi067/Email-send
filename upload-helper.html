@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>邮件系统 - 附件上传助手</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Microsoft YaHei', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 40px;
+            max-width: 600px;
+            width: 100%;
+        }
+        
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+        
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        
+        .step {
+            margin-bottom: 30px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 10px;
+            border-left: 4px solid #667eea;
+        }
+        
+        .step-title {
+            font-weight: bold;
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+        
+        .file-input-wrapper {
+            position: relative;
+            overflow: hidden;
+            display: inline-block;
+            width: 100%;
+        }
+        
+        .file-input-wrapper input[type=file] {
+            position: absolute;
+            left: -9999px;
+        }
+        
+        .file-input-label {
+            display: block;
+            padding: 12px;
+            background: #667eea;
+            color: white;
+            border-radius: 8px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .file-input-label:hover {
+            background: #5a67d8;
+            transform: translateY(-2px);
+        }
+        
+        .file-list {
+            margin-top: 15px;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+        
+        .file-item {
+            padding: 8px;
+            background: white;
+            margin: 5px 0;
+            border-radius: 5px;
+            font-size: 14px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .upload-btn {
+            width: 100%;
+            padding: 15px;
+            background: #48bb78;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 18px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin-top: 20px;
+        }
+        
+        .upload-btn:hover {
+            background: #38a169;
+            transform: translateY(-2px);
+        }
+        
+        .upload-btn:disabled {
+            background: #cbd5e0;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+            display: none;
+        }
+        
+        .status.success {
+            background: #c6f6d5;
+            color: #22543d;
+            border: 1px solid #9ae6b4;
+        }
+        
+        .status.error {
+            background: #fed7d7;
+            color: #742a2a;
+            border: 1px solid #fc8181;
+        }
+        
+        .status.info {
+            background: #bee3f8;
+            color: #2c5282;
+            border: 1px solid #90cdf4;
+        }
+        
+        .progress {
+            width: 100%;
+            height: 4px;
+            background: #e2e8f0;
+            border-radius: 2px;
+            margin-top: 20px;
+            overflow: hidden;
+            display: none;
+        }
+        
+        .progress-bar {
+            height: 100%;
+            background: #667eea;
+            width: 0%;
+            transition: width 0.3s;
+        }
+        
+        .server-input {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            font-size: 14px;
+        }
+        
+        .server-input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📧 邮件附件上传助手</h1>
+        <p class="subtitle">支持批量上传，自动匹配</p>
+        
+        <div class="step">
+            <div class="step-title">服务器地址</div>
+            <input type="text" id="serverUrl" class="server-input" 
+                   value="http://39.97.56.127:5000" 
+                   placeholder="输入服务器地址，如: http://39.97.56.127:5000">
+        </div>
+        
+        <div class="step">
+            <div class="step-title">第一步：上传所有附件</div>
+            <div class="file-input-wrapper">
+                <input type="file" id="attachments" multiple accept=".xlsx,.xls,.pdf,.doc,.docx,.zip">
+                <label for="attachments" class="file-input-label">
+                    📎 选择附件文件（支持多选）
+                </label>
+            </div>
+            <div id="attachmentList" class="file-list"></div>
+        </div>
+        
+        <div class="step">
+            <div class="step-title">第二步：上传Excel文件</div>
+            <div class="file-input-wrapper">
+                <input type="file" id="excelFile" accept=".xlsx,.xls">
+                <label for="excelFile" class="file-input-label">
+                    📊 选择Excel文件
+                </label>
+            </div>
+            <div id="excelList" class="file-list"></div>
+        </div>
+        
+        <button id="uploadBtn" class="upload-btn" disabled>
+            🚀 开始上传并解析
+        </button>
+        
+        <div class="progress" id="progress">
+            <div class="progress-bar" id="progressBar"></div>
+        </div>
+        
+        <div id="status" class="status"></div>
+    </div>
+    
+    <script>
+        let attachmentFiles = [];
+        let excelFile = null;
+        
+        // 附件选择
+        document.getElementById('attachments').addEventListener('change', function(e) {
+            attachmentFiles = Array.from(e.target.files);
+            updateFileList('attachmentList', attachmentFiles);
+            checkUploadReady();
+        });
+        
+        // Excel选择
+        document.getElementById('excelFile').addEventListener('change', function(e) {
+            excelFile = e.target.files[0];
+            updateFileList('excelList', excelFile ? [excelFile] : []);
+            checkUploadReady();
+        });
+        
+        // 更新文件列表显示
+        function updateFileList(listId, files) {
+            const listEl = document.getElementById(listId);
+            listEl.innerHTML = '';
+            files.forEach(file => {
+                const item = document.createElement('div');
+                item.className = 'file-item';
+                item.innerHTML = `
+                    <span>${file.name}</span>
+                    <span>${(file.size / 1024).toFixed(1)} KB</span>
+                `;
+                listEl.appendChild(item);
+            });
+        }
+        
+        // 检查是否可以上传
+        function checkUploadReady() {
+            const btn = document.getElementById('uploadBtn');
+            btn.disabled = !(attachmentFiles.length > 0 && excelFile);
+        }
+        
+        // 显示状态
+        function showStatus(message, type = 'info') {
+            const statusEl = document.getElementById('status');
+            statusEl.className = 'status ' + type;
+            statusEl.textContent = message;
+            statusEl.style.display = 'block';
+        }
+        
+        // 上传处理
+        document.getElementById('uploadBtn').addEventListener('click', async function() {
+            const serverUrl = document.getElementById('serverUrl').value.trim();
+            if (!serverUrl) {
+                showStatus('请输入服务器地址', 'error');
+                return;
+            }
+            
+            const btn = this;
+            btn.disabled = true;
+            
+            const progressEl = document.getElementById('progress');
+            const progressBar = document.getElementById('progressBar');
+            progressEl.style.display = 'block';
+            
+            try {
+                // 第一步：上传附件
+                showStatus('正在上传附件...', 'info');
+                progressBar.style.width = '30%';
+                
+                const attachmentFormData = new FormData();
+                attachmentFiles.forEach(file => {
+                    attachmentFormData.append('files', file);
+                });
+                
+                const attachmentResp = await fetch(`${serverUrl}/api/upload-attachments`, {
+                    method: 'POST',
+                    body: attachmentFormData
+                });
+                
+                if (!attachmentResp.ok) {
+                    throw new Error('附件上传失败');
+                }
+                
+                const attachmentResult = await attachmentResp.json();
+                
+                // 第二步：上传Excel并解析
+                showStatus('正在解析Excel...', 'info');
+                progressBar.style.width = '70%';
+                
+                const excelFormData = new FormData();
+                excelFormData.append('excel', excelFile);
+                
+                const excelResp = await fetch(`${serverUrl}/api/smart-parse-excel`, {
+                    method: 'POST',
+                    body: excelFormData
+                });
+                
+                const excelResult = await excelResp.json();
+                
+                progressBar.style.width = '100%';
+                
+                if (excelResult.success) {
+                    showStatus(
+                        `✅ 成功！已匹配 ${excelResult.total} 个收件人，跳过 ${excelResult.skipped} 行（无附件）`, 
+                        'success'
+                    );
+                } else {
+                    throw new Error(excelResult.message || '解析失败');
+                }
+                
+            } catch (error) {
+                showStatus('❌ ' + error.message, 'error');
+            } finally {
+                btn.disabled = false;
+                setTimeout(() => {
+                    progressEl.style.display = 'none';
+                    progressBar.style.width = '0%';
+                }, 2000);
+            }
+        });
+    </script>
+</body>
+</html>
