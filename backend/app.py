@@ -15,22 +15,49 @@ import re
 import logging
 from datetime import datetime
 import traceback
+import uuid
 
-app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "*"}})
-app.config['SECRET_KEY'] = 'your-secret-key-here'
-app.config['UPLOAD_FOLDER'] = 'uploads'
-app.config['ATTACHMENT_FOLDER'] = 'attachments'
-app.config['TEMPLATE_FOLDER'] = 'templates'
-app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB
+# 导入自定义模块
+from config import config
+from validators import (
+    validate_smtp_config, allowed_file, sanitize_filename, 
+    validate_recipients, validate_json_request
+)
+from database import DatabaseManager
 
-# 创建必要的目录
-for folder in ['uploads', 'attachments', 'templates']:
-    if not os.path.exists(folder):
-        os.makedirs(folder)
+# 初始化应用
+def create_app(config_name=None):
+    app = Flask(__name__)
+    
+    # 加载配置
+    config_name = config_name or os.environ.get('FLASK_ENV', 'development')
+    app.config.from_object(config[config_name])
+    
+    # 配置CORS
+    CORS(app, resources={r"/api/*": {"origins": app.config['CORS_ORIGINS']}})
+    
+    # 创建必要的目录
+    for folder in [app.config['UPLOAD_FOLDER'], app.config['ATTACHMENT_FOLDER'], app.config['TEMPLATE_FOLDER']]:
+        if not os.path.exists(folder):
+            os.makedirs(folder)
+    
+    # 配置日志
+    logging.basicConfig(
+        level=getattr(logging, app.config['LOG_LEVEL']),
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(app.config['LOG_FILE']),
+            logging.StreamHandler()
+        ]
+    )
+    
+    # 初始化数据库
+    db = DatabaseManager()
+    
+    return app, db
 
-# 配置日志
-logging.basicConfig(level=logging.INFO)
+app, db = create_app()
+
 logger = logging.getLogger(__name__)
 
 # 邮箱服务商配置
@@ -215,17 +242,26 @@ def get_email_providers():
     return jsonify(EMAIL_PROVIDERS)
 
 @app.route('/api/test-connection', methods=['POST', 'OPTIONS'])
+@validate_json_request(['smtp_config'])
 def test_connection():
     """测试SMTP连接"""
     if request.method == 'OPTIONS':
         return '', 200
     
     try:
-        data = request.json
+        data = request.get_json()
         smtp_config = data.get('smtp_config', {})
         
+        # 验证SMTP配置
+        validation_errors = validate_smtp_config(smtp_config)
+        if validation_errors:
+            return jsonify({
+                'success': False,
+                'message': '配置验证失败: ' + '; '.join(validation_errors)
+            }), 400
+        
         smtp_host = smtp_config.get('smtp_host')
-        smtp_port = smtp_config.get('smtp_port')
+        smtp_port = int(smtp_config.get('smtp_port'))
         sender_email = smtp_config.get('sender_email')
         password = smtp_config.get('password')
         use_ssl = smtp_config.get('use_ssl', True)
@@ -239,22 +275,31 @@ def test_connection():
             use_ssl = True
             use_tls = False
         
+        # 创建SMTP连接
         if use_ssl:
             context = ssl.create_default_context()
-            server = smtplib.SMTP_SSL(smtp_host, smtp_port, context=context)
+            server = smtplib.SMTP_SSL(smtp_host, smtp_port, context=context, timeout=10)
         elif use_tls:
-            server = smtplib.SMTP(smtp_host, smtp_port)
+            server = smtplib.SMTP(smtp_host, smtp_port, timeout=10)
             server.starttls()
         else:
-            server = smtplib.SMTP(smtp_host, smtp_port)
+            server = smtplib.SMTP(smtp_host, smtp_port, timeout=10)
             
         server.login(sender_email, password)
         server.quit()
         
+        logger.info(f"SMTP连接测试成功: {sender_email}")
         return jsonify({'success': True, 'message': '连接成功'})
+        
+    except smtplib.SMTPAuthenticationError as e:
+        logger.error(f"SMTP认证失败: {str(e)}")
+        return jsonify({'success': False, 'message': '认证失败，请检查邮箱和密码'}), 400
+    except smtplib.SMTPConnectError as e:
+        logger.error(f"SMTP连接失败: {str(e)}")
+        return jsonify({'success': False, 'message': '连接服务器失败，请检查主机和端口'}), 400
     except Exception as e:
-        logger.error(f"连接失败: {str(e)}")
-        return jsonify({'success': False, 'message': str(e)})
+        logger.error(f"连接测试失败: {str(e)}")
+        return jsonify({'success': False, 'message': f'连接失败: {str(e)}'}), 500
 
 @app.route('/api/parse-excel', methods=['POST'])
 def parse_excel():
@@ -267,8 +312,12 @@ def parse_excel():
         if file.filename == '':
             return jsonify({'success': False, 'message': '文件名为空'}), 400
         
+        # 验证文件类型
+        if not allowed_file(file.filename, {'xlsx', 'xls'}):
+            return jsonify({'success': False, 'message': '只支持Excel文件（.xlsx, .xls）'}), 400
+        
         # 保存文件
-        filename = secure_filename(file.filename)
+        filename = sanitize_filename(file.filename)
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(filepath)
         
@@ -276,21 +325,28 @@ def parse_excel():
         result = parse_custom_excel(filepath)
         
         if result['success']:
-            # 保存到session
-            session['recipients'] = result['recipients']
+            # 验证解析结果
+            validation_errors, valid_recipients = validate_recipients(result['recipients'])
+            if validation_errors:
+                logger.warning(f"收件人验证警告: {validation_errors}")
             
-            message = f"成功导入 {result['total']} 个有附件的收件人"
+            # 保存到session
+            session['recipients'] = valid_recipients
+            
+            message = f"成功导入 {len(valid_recipients)} 个有附件的收件人"
             if result['skipped'] > 0:
                 message += f"，跳过 {result['skipped']} 行（无附件或无效数据）"
             
             return jsonify({
                 'success': True,
-                'recipients': result['recipients'],
-                'message': message,
-                'stats': {
-                    'total': result['total'],
-                    'skipped': result['skipped']
-                }
+                'data': {
+                    'recipients': valid_recipients,
+                    'stats': {
+                        'total': len(valid_recipients),
+                        'skipped': result['skipped']
+                    }
+                },
+                'message': message
             })
         else:
             return jsonify({
@@ -302,7 +358,7 @@ def parse_excel():
         logger.error(f"处理Excel文件失败: {str(e)}")
         return jsonify({
             'success': False,
-            'message': str(e)
+            'message': '文件处理失败，请检查文件格式是否正确'
         }), 500
 
 @app.route('/api/download-template', methods=['GET'])
@@ -353,8 +409,11 @@ def download_template():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/send-emails', methods=['POST'])
+@validate_json_request(['smtp_config', 'subject', 'content'])
 def send_emails():
     """发送邮件 - 只发送给有附件的收件人"""
+    batch_id = str(uuid.uuid4())
+    
     try:
         data = request.json
         smtp_config = data.get('smtp_config', {})
@@ -513,38 +572,199 @@ def send_emails():
             'message': str(e)
         }), 500
 
+# 模板管理API
 @app.route('/api/templates', methods=['GET'])
 def get_templates():
     """获取邮件模板列表"""
-    return jsonify([])
+    try:
+        templates = db.get_templates()
+        return jsonify({
+            'success': True,
+            'data': templates
+        })
+    except Exception as e:
+        logger.error(f"获取模板列表失败: {str(e)}")
+        return jsonify({
+            'success': False,
+            'message': '获取模板列表失败'
+        }), 500
 
+@app.route('/api/templates', methods=['POST'])
+@validate_json_request(['name', 'subject', 'content'])
+def create_template():
+    """创建邮件模板"""
+    try:
+        data = request.get_json()
+        
+        template_id = db.create_template(
+            name=data['name'],
+            subject=data['subject'],
+            content=data['content'],
+            html_mode=data.get('html_mode', False)
+        )
+        
+        return jsonify({
+            'success': True,
+            'message': '模板创建成功',
+            'data': {'id': template_id}
+        })
+    except Exception as e:
+        logger.error(f"创建模板失败: {str(e)}")
+        return jsonify({
+            'success': False,
+            'message': '创建模板失败'
+        }), 500
+
+@app.route('/api/templates/<int:template_id>', methods=['DELETE'])
+def delete_template(template_id):
+    """删除邮件模板"""
+    try:
+        if db.delete_template(template_id):
+            return jsonify({
+                'success': True,
+                'message': '模板删除成功'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'message': '模板不存在'
+            }), 404
+    except Exception as e:
+        logger.error(f"删除模板失败: {str(e)}")
+        return jsonify({
+            'success': False,
+            'message': '删除模板失败'
+        }), 500
+
+# 发件人配置API
 @app.route('/api/sender-configs', methods=['GET'])
 def get_sender_configs():
     """获取发件人配置列表"""
-    return jsonify([])
+    try:
+        configs = db.get_sender_configs()
+        return jsonify({
+            'success': True,
+            'data': configs
+        })
+    except Exception as e:
+        logger.error(f"获取发件人配置列表失败: {str(e)}")
+        return jsonify({
+            'success': False,
+            'message': '获取发件人配置列表失败'
+        }), 500
+
+@app.route('/api/sender-configs', methods=['POST'])
+@validate_json_request(['name', 'smtp_host', 'smtp_port', 'sender_email', 'sender_name'])
+def create_sender_config():
+    """创建发件人配置"""
+    try:
+        data = request.get_json()
+        
+        # 验证配置
+        validation_errors = validate_smtp_config(data)
+        if validation_errors:
+            return jsonify({
+                'success': False,
+                'message': '配置验证失败: ' + '; '.join(validation_errors)
+            }), 400
+        
+        config_id = db.create_sender_config(
+            name=data['name'],
+            smtp_host=data['smtp_host'],
+            smtp_port=data['smtp_port'],
+            sender_email=data['sender_email'],
+            sender_name=data['sender_name'],
+            use_ssl=data.get('use_ssl', True),
+            use_tls=data.get('use_tls', False),
+            html_mode=data.get('html_mode', False)
+        )
+        
+        return jsonify({
+            'success': True,
+            'message': '发件人配置创建成功',
+            'data': {'id': config_id}
+        })
+    except Exception as e:
+        logger.error(f"创建发件人配置失败: {str(e)}")
+        return jsonify({
+            'success': False,
+            'message': '创建发件人配置失败'
+        }), 500
+
+@app.route('/api/sender-configs/<int:config_id>', methods=['DELETE'])
+def delete_sender_config(config_id):
+    """删除发件人配置"""
+    try:
+        if db.delete_sender_config(config_id):
+            return jsonify({
+                'success': True,
+                'message': '发件人配置删除成功'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'message': '发件人配置不存在'
+            }), 404
+    except Exception as e:
+        logger.error(f"删除发件人配置失败: {str(e)}")
+        return jsonify({
+            'success': False,
+            'message': '删除发件人配置失败'
+        }), 500
 
 @app.route('/api/upload-attachment', methods=['POST'])
 def upload_attachment():
     """上传附件"""
     try:
         if 'file' not in request.files:
-            return jsonify({'error': '没有文件'}), 400
+            return jsonify({'success': False, 'message': '没有文件'}), 400
         
         file = request.files['file']
         if file.filename == '':
-            return jsonify({'error': '文件名为空'}), 400
+            return jsonify({'success': False, 'message': '文件名为空'}), 400
         
-        filename = secure_filename(file.filename)
+        # 验证文件类型
+        if not allowed_file(file.filename, app.config['ALLOWED_EXTENSIONS']):
+            return jsonify({
+                'success': False, 
+                'message': f'不支持的文件类型。支持的类型: {", ".join(app.config["ALLOWED_EXTENSIONS"])}'
+            }), 400
+        
+        # 检查文件大小（已经在Flask层面检查，但双重保险）
+        if hasattr(file, 'content_length') and file.content_length > app.config['MAX_CONTENT_LENGTH']:
+            return jsonify({
+                'success': False,
+                'message': f'文件太大，最大允许 {app.config["MAX_CONTENT_LENGTH"] // (1024*1024)}MB'
+            }), 400
+        
+        # 安全处理文件名
+        filename = sanitize_filename(file.filename)
         filepath = os.path.join(app.config['ATTACHMENT_FOLDER'], filename)
+        
+        # 如果文件已存在，添加时间戳
+        if os.path.exists(filepath):
+            import time
+            name, ext = os.path.splitext(filename)
+            filename = f"{name}_{int(time.time())}{ext}"
+            filepath = os.path.join(app.config['ATTACHMENT_FOLDER'], filename)
+        
         file.save(filepath)
         
+        logger.info(f"附件上传成功: {filename}")
         return jsonify({
             'success': True,
-            'filename': filename,
-            'path': filepath
+            'data': {
+                'filename': filename,
+                'filepath': filepath
+            },
+            'message': '附件上传成功'
         })
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"附件上传失败: {str(e)}")
+        return jsonify({
+            'success': False,
+            'message': '附件上传失败'
+        }), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False)
