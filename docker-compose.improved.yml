@@ -1,0 +1,72 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.improved
+      target: backend
+    container_name: email-backend
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./data/uploads:/app/uploads
+      - ./data/attachments:/app/attachments
+      - ./data/templates:/app/templates
+      - ./data/logs:/app/logs
+      - ./data/email_sender.db:/app/email_sender.db
+    environment:
+      - FLASK_ENV=production
+      - SECRET_KEY=${SECRET_KEY:-your-secret-key-change-this}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
+      - MAX_CONTENT_LENGTH=${MAX_CONTENT_LENGTH:-52428800}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - MAX_RECIPIENTS_PER_BATCH=${MAX_RECIPIENTS_PER_BATCH:-100}
+      - EMAIL_RATE_LIMIT=${EMAIL_RATE_LIMIT:-10}
+      - DATABASE_PATH=/app/email_sender.db
+    networks:
+      - email-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.improved
+      target: frontend-build
+    container_name: email-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - email-network
+
+  # 可选：添加Redis用于会话存储和缓存
+  redis:
+    image: redis:7-alpine
+    container_name: email-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - email-network
+    command: redis-server --appendonly yes
+
+volumes:
+  redis_data:
+
+networks:
+  email-network:
+    driver: bridge
