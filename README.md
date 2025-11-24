@@ -48,6 +48,10 @@ npm install
 npm run dev
 ```
 
+## 📘 快速开始配置
+
+想要按照 Linux 或 Windows 环境分别完成依赖安装、脚本启动与常见问题排查，请查阅 [docs/quickstart-config.md](docs/quickstart-config.md)。
+
 ## 📝 Excel格式说明
 
 系统支持以下Excel格式：
